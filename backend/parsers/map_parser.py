@@ -1,11 +1,12 @@
-"""GNU linker map file parser.
+"""GNU linker map file parser for Zephyr RTOS builds.
 
-Parses the two major blocks:
-1. Memory Configuration → MemoryRegion list with origin + length
-2. Linker script and memory map → sections → object files → symbols
+Zephyr's linker script uses section GROUP names without a leading dot
+(e.g. "text", "bss", "datas", "noinit") while individual object-file
+contributions appear indented with dotted names (".text.main", ".bss.x").
+This parser handles both formats as well as two-line object entries and
+the "load address" suffix on initialized-data sections.
 
 Targets GCC/GNU ld output (Zephyr's default toolchain).
-Toolchain is detected from the map file header comment.
 """
 
 import re
@@ -14,28 +15,72 @@ from loguru import logger
 
 from models.elf_models import MemoryRegion, SectionWithObjects, ObjectFileEntry, ELFSymbol
 
+# Memory Configuration block
 _RE_MEM_REGION = re.compile(
     r"^(\S+)\s+(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)\s*(\S*)"
 )
-_RE_SECTION_HEADER = re.compile(r"^(\.\S+)\s+(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)")
-_RE_OBJ_LINE = re.compile(
-    r"^\s+(\.\S+)?\s+(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)\s+(\S+\.(obj|o|a\(\S+\)))"
+
+# Top-level section header — name may or may not start with a dot.
+# Optional "load address 0x..." suffix (for .data-type sections).
+# Examples:
+#   text            0x00000100     0x4348
+#   .debug_loc      0x00000000    0x19557
+#   datas           0x20000000       0xbc load address 0x00004cb4
+_RE_SECTION_HEADER = re.compile(
+    r"^(\.?\S+)\s+(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)"
 )
-_RE_SYMBOL_LINE = re.compile(r"^\s+(0x[0-9a-fA-F]+)\s+(\S+)$")
+
+# Object file sub-line (indented, may start with a sub-section name or not)
+# Examples:
+#   " .text.main     0x00000100       0x18 app/libapp.a(main.c.obj)"
+#   "                0x00000118       0x10 zephyr/libzephyr.a(boot_banner.c.obj)"
+_RE_OBJ_LINE = re.compile(
+    r"^\s+(?:\.\S+\s+)?(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)\s+(\S+\.(obj|o)|\S+\.a\([^)]+\))"
+)
+
+# Pure symbol address line: "  0xADDRESS   symbol_name"
+_RE_SYMBOL_LINE = re.compile(r"^\s+(0x[0-9a-fA-F]+)\s+([A-Za-z_][A-Za-z0-9_.@]+)$")
+
 _RE_ARCHIVE = re.compile(r"^(.+\.a)\((.+)\)$")
 
-# Sections to skip (debug, discard)
-_SKIP_SECTIONS = {"/DISCARD/", ".debug_info", ".debug_abbrev", ".debug_str",
-                  ".debug_line", ".debug_frame", ".comment", ".ARM.attributes"}
+# Sections whose content we never want in the memory map
+_SKIP_PREFIXES = (
+    ".debug", "/DISCARD/", ".comment", ".ARM.attributes",
+    ".stab", ".gnu.warning",
+)
 
-FLASH_PREFIXES = (".text", ".rodata", ".ARM")
-RAM_PREFIXES = (".bss", ".noinit", ".heap", ".stack", ".data")
+# Zephyr group names → canonical section name with dot
+_ZEPHYR_GROUP_MAP = {
+    "text":   ".text",
+    "rodata": ".rodata",
+    "datas":  ".data",
+    "bss":    ".bss",
+    "noinit": ".noinit",
+    "initlevel": ".init_array",
+    "initshell": ".shell_root_cmds",
+    "log_const_sections": ".log_const_sections",
+    "log_dynamic_sections": ".log_dynamic_sections",
+    "device_handles": ".device_handles",
+    "devices": ".device",
+    "sw_isr_table": ".isr_vector",
+    "vectors": ".vectors",
+}
+
+FLASH_PREFIXES = (".text", ".rodata", ".ARM", ".vectors", ".isr")
+RAM_PREFIXES   = (".bss", ".noinit", ".data", ".heap", ".stack", ".ccm")
 
 
 def _detect_toolchain(content: str) -> str:
-    if "clang" in content[:500].lower():
-        return "clang"
-    return "gcc"
+    return "clang" if "clang" in content[:500].lower() else "gcc"
+
+
+def _normalize_section_name(raw: str) -> str:
+    """Map Zephyr group names to conventional dotted section names."""
+    return _ZEPHYR_GROUP_MAP.get(raw, raw if raw.startswith(".") else f".{raw}")
+
+
+def _should_skip(name: str) -> bool:
+    return any(name.startswith(p) for p in _SKIP_PREFIXES)
 
 
 def _classify_region(name: str, regions: list[MemoryRegion], addr: int) -> str:
@@ -43,9 +88,9 @@ def _classify_region(name: str, regions: list[MemoryRegion], addr: int) -> str:
         origin = int(r.origin, 16)
         if origin <= addr < origin + r.length:
             return r.name
-    if name.startswith(FLASH_PREFIXES):
+    if any(name.startswith(p) for p in FLASH_PREFIXES):
         return "FLASH"
-    if name.startswith(RAM_PREFIXES):
+    if any(name.startswith(p) for p in RAM_PREFIXES):
         return "RAM"
     return "UNKNOWN"
 
@@ -58,7 +103,6 @@ def parse(map_path: Path) -> tuple[list[MemoryRegion], list[ELFSymbol], str]:
     regions = _parse_memory_config(lines)
     map_sections, map_symbols = _parse_linker_map(lines, regions)
 
-    # Build region tree from parsed sections
     region_map: dict[str, MemoryRegion] = {r.name: r for r in regions}
     for sec in map_sections:
         r = region_map.get(sec.region)
@@ -96,10 +140,12 @@ def _parse_linker_map(
     lines: list[str], regions: list[MemoryRegion]
 ) -> tuple[list[SectionWithObjects], list[ELFSymbol]]:
     sections: list[SectionWithObjects] = []
-    symbols: list[ELFSymbol] = []
+    symbols:  list[ELFSymbol] = []
+
     in_map = False
     current_section: SectionWithObjects | None = None
     current_obj: ObjectFileEntry | None = None
+    pending_subsection: str | None = None  # for two-line sub-section entries
 
     for line in lines:
         if "Linker script and memory map" in line:
@@ -107,51 +153,67 @@ def _parse_linker_map(
             continue
         if not in_map:
             continue
-        if line.strip().startswith("OUTPUT("):
-            continue
+
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        if "size before relaxing" in line or stripped.startswith("FILL"):
+        if any(kw in stripped for kw in ("size before relaxing", "FILL ", "LOAD ", "OUTPUT(",
+                                          "SORT_BY_ALIGNMENT", "[!provide]", "*(")):
             continue
 
-        # Section header: starts at column 0 with a dot
-        if line and not line[0].isspace() and line.startswith("."):
+        # ── TOP-LEVEL SECTION HEADER (no leading whitespace) ──────────────
+        if line and not line[0].isspace():
             m = _RE_SECTION_HEADER.match(line)
             if m:
-                sec_name = m.group(1)
-                if any(sec_name.startswith(skip) for skip in _SKIP_SECTIONS):
+                raw_name = m.group(1)
+                canonical = _normalize_section_name(raw_name)
+                if _should_skip(canonical):
                     current_section = None
+                    current_obj = None
+                    pending_subsection = None
                     continue
                 addr = int(m.group(2), 16)
                 size = int(m.group(3), 16)
                 if size == 0:
                     current_section = None
+                    current_obj = None
                     continue
-                region = _classify_region(sec_name, regions, addr)
+                region = _classify_region(canonical, regions, addr)
                 current_section = SectionWithObjects(
-                    name=sec_name, size=size,
-                    load_address=addr, region=region,
+                    name=canonical,
+                    size=size,
+                    load_address=addr,
+                    region=region,
                 )
                 sections.append(current_section)
                 current_obj = None
-            continue
+                pending_subsection = None
+            continue  # whether matched or not, top-level line is done
 
+        # ── INDENTED LINES (object files, sub-sections, symbols) ──────────
         if current_section is None:
             continue
 
-        # Object file sub-line
+        # Check for a two-line sub-section: first line has only the sub-name
+        # e.g.  " .bss.z_idle_threads"
+        if re.match(r"^\s+\.\S+\s*$", line):
+            pending_subsection = stripped
+            continue
+
+        # Object file line
         m = _RE_OBJ_LINE.match(line)
         if m:
-            addr = int(m.group(2), 16)
-            size = int(m.group(3), 16)
-            raw_path = m.group(4)
-            # Resolve archive member
+            addr = int(m.group(1), 16)
+            size = int(m.group(2), 16)
+            raw_path = m.group(3)
+            if size == 0:
+                pending_subsection = None
+                continue
             am = _RE_ARCHIVE.match(raw_path)
             obj_path = f"{am.group(1)}({am.group(2)})" if am else raw_path
-            if size > 0:
-                current_obj = ObjectFileEntry(path=obj_path, size=size)
-                current_section.object_files.append(current_obj)
+            current_obj = ObjectFileEntry(path=obj_path, size=size)
+            current_section.object_files.append(current_obj)
+            pending_subsection = None
             continue
 
         # Symbol address line
@@ -159,14 +221,16 @@ def _parse_linker_map(
         if m and current_obj:
             addr = int(m.group(1), 16)
             sym_name = m.group(2)
-            if not sym_name.startswith("0x"):
-                symbols.append(ELFSymbol(
-                    name=sym_name,
-                    address=addr,
-                    size=0,
-                    section=current_section.name,
-                    object_file=current_obj.path,
-                    sym_type="NOTYPE",
-                ))
+            symbols.append(ELFSymbol(
+                name=sym_name,
+                address=addr,
+                size=0,
+                section=current_section.name,
+                object_file=current_obj.path,
+                sym_type="NOTYPE",
+            ))
+            continue
+
+        pending_subsection = None
 
     return sections, symbols

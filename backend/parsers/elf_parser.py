@@ -118,13 +118,19 @@ def parse(elf_path: Path) -> tuple[list[ELFSection], list[ELFSymbol], dict]:
         metadata["arch"] = elffile.get_machine_arch()
         metadata["machine"] = str(elffile["e_machine"])
 
-        # Phase 1: sections
+        SHF_ALLOC = 0x2  # section occupies memory at runtime
+
+        # Phase 1: sections — only keep sections actually loaded into memory
         section_index: dict[int, str] = {}
         for idx, section in enumerate(elffile.iter_sections()):
             name = section.name
             size = section["sh_size"]
             addr = section["sh_addr"]
-            if size == 0 or not name.startswith("."):
+            flags = section["sh_flags"]
+            # Skip non-loadable sections (debug info, comments, etc.)
+            if not (flags & SHF_ALLOC):
+                continue
+            if size == 0:
                 continue
             region = _classify_region(name, addr)
             sections.append(ELFSection(

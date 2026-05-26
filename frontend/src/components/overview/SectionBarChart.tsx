@@ -9,10 +9,13 @@ interface Props {
   sections: SectionSummary[]
 }
 
+const DEBUG_PREFIXES = ['.debug', '.comment', '.last_section', '.stab', '.gnu.warning']
+
 export default function SectionBarChart({ sections }: Props) {
   if (!sections.length) return <p style={{ color: '#6b7280' }}>No section data.</p>
 
   const data = [...sections]
+    .filter((s) => !DEBUG_PREFIXES.some((p) => s.name.startsWith(p)))
     .sort((a, b) => b.size - a.size)
     .map((s) => ({ name: s.name, size: s.size, region: s.region }))
 
