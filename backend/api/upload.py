@@ -63,6 +63,15 @@ async def upload_build(
                 detail=f"{key} file exceeds {settings.max_upload_size_mb} MB limit.",
             )
 
+    # Pre-save a stub so the poll endpoint returns 200 immediately
+    # instead of 404 while the background task is still running.
+    from models.session import AnalysisResult
+    session_store.save(session_id, AnalysisResult(
+        session_id=session_id,
+        status="parsing",
+        files_received=files_received,
+    ))
+
     background_tasks.add_task(
         analysis_service.run_analysis,
         session_id,
