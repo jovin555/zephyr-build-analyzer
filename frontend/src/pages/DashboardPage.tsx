@@ -1,5 +1,6 @@
-import { useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
+import { exportDashboardPdf } from '../utils/exportPdf'
 import { useAnalysisStore } from '../store/analysisStore'
 import LoadingSpinner from '../components/shared/LoadingSpinner'
 import ErrorBanner from '../components/shared/ErrorBanner'
@@ -14,10 +15,27 @@ const TABS = ['overview', 'memory', 'symbols', 'kconfig'] as const
 export default function DashboardPage() {
   const { sessionId } = useParams<{ sessionId: string }>()
   const navigate = useNavigate()
+  const contentRef = useRef<HTMLDivElement>(null)
+  const [exporting, setExporting] = useState(false)
+  const [exportMsg, setExportMsg] = useState('')
   const {
     analysis, isLoading, uploadError, activeTab, symbolFilter, kconfigFilter,
     loadSession, setActiveTab, setSymbolFilter, setKconfigFilter, clearError,
   } = useAnalysisStore()
+
+  async function handleExportPdf() {
+    if (!analysis || exporting) return
+    setExporting(true)
+    setExportMsg('Preparing export…')
+    try {
+      await exportDashboardPdf(analysis, setActiveTab, contentRef, setExportMsg)
+    } catch (e) {
+      setExportMsg('Export failed — see console for details')
+      console.error(e)
+    } finally {
+      setExporting(false)
+    }
+  }
 
   useEffect(() => {
     if (sessionId && (!analysis || analysis.session_id !== sessionId)) {
@@ -44,6 +62,27 @@ export default function DashboardPage() {
             {analysis.parse_metadata.elf_arch || 'Unknown arch'} | v{analysis.parse_metadata.parser_version}
           </span>
         )}
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          {exportMsg && (
+            <span style={{ fontSize: '0.78rem', color: exporting ? '#3b82f6' : '#16a34a', fontFamily: 'monospace' }}>
+              {exportMsg}
+            </span>
+          )}
+          {analysis && (
+            <button
+              onClick={handleExportPdf}
+              disabled={exporting}
+              style={{
+                padding: '0.4rem 1rem', borderRadius: 8, fontSize: '0.85rem', fontWeight: 600,
+                background: exporting ? '#93c5fd' : '#3b82f6', color: '#fff',
+                border: 'none', cursor: exporting ? 'not-allowed' : 'pointer',
+                transition: 'background 0.2s',
+              }}
+            >
+              {exporting ? 'Exporting…' : 'Export PDF'}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Tab bar */}
@@ -62,7 +101,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Content */}
-      <div style={{ padding: '2rem', maxWidth: 1200, margin: '0 auto' }}>
+      <div ref={contentRef} style={{ padding: '2rem', maxWidth: 1200, margin: '0 auto' }}>
         {uploadError && <ErrorBanner message={uploadError} onDismiss={clearError} />}
 
         {analysis?.parse_warnings.map((w, i) => (
