@@ -6,11 +6,17 @@ interface Props {
   isLoading: boolean
 }
 
-const FILE_HINTS: { key: keyof FileUploadPayload; label: string; hint: string }[] = [
-  { key: 'elfFile',    label: 'ELF binary',     hint: 'zephyr.elf' },
-  { key: 'mapFile',    label: 'Linker map',      hint: 'zephyr.map' },
-  { key: 'configFile', label: 'Kconfig',         hint: '.config or autoconf.h' },
-  { key: 'dtsFile',    label: 'Devicetree',      hint: 'devicetree_generated.h (optional)' },
+const FILE_HINTS: {
+  key: keyof FileUploadPayload
+  label: string
+  hint: string
+  accept: string
+  isDotfile?: boolean
+}[] = [
+  { key: 'elfFile',    label: 'ELF binary',  hint: 'zephyr.elf',                    accept: '.elf,application/octet-stream' },
+  { key: 'mapFile',    label: 'Linker map',  hint: 'zephyr.map',                    accept: '.map,text/plain' },
+  { key: 'configFile', label: 'Kconfig',     hint: '.config or autoconf.h',         accept: '*', isDotfile: true },
+  { key: 'dtsFile',    label: 'Devicetree',  hint: 'devicetree_generated.h (optional)', accept: '.h,.dts,.dtsi' },
 ]
 
 export default function DropZone({ onFilesSelected, isLoading }: Props) {
@@ -32,31 +38,41 @@ export default function DropZone({ onFilesSelected, isLoading }: Props) {
 
   return (
     <div style={{ maxWidth: 560, margin: '0 auto' }}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1.5rem' }}>
-        {FILE_HINTS.map(({ key, label, hint }) => (
-          <label key={key} style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            padding: '0.75rem 1rem', border: '1px solid',
-            borderColor: selected[key] ? '#3b82f6' : '#d1d5db',
-            borderRadius: 8, cursor: 'pointer', background: selected[key] ? '#eff6ff' : '#fff',
-            transition: 'all 0.15s',
-          }}>
-            <span>
-              <span style={{ fontWeight: 600, marginRight: 8 }}>{label}</span>
-              <span style={{ fontSize: '0.8rem', color: '#6b7280' }}>{hint}</span>
-            </span>
-            {selected[key] ? (
-              <span style={{ color: '#3b82f6', fontSize: '0.85rem' }}>✓ {(selected[key] as File).name}</span>
-            ) : (
-              <span style={{ color: '#9ca3af', fontSize: '0.8rem' }}>Click to select</span>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1rem' }}>
+        {FILE_HINTS.map(({ key, label, hint, accept, isDotfile }) => (
+          <div key={key}>
+            <label style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '0.75rem 1rem', border: '1px solid',
+              borderColor: selected[key] ? '#3b82f6' : '#d1d5db',
+              borderRadius: 8, cursor: 'pointer', background: selected[key] ? '#eff6ff' : '#fff',
+              transition: 'all 0.15s',
+            }}>
+              <span>
+                <span style={{ fontWeight: 600, marginRight: 8 }}>{label}</span>
+                <span style={{ fontSize: '0.8rem', color: '#6b7280' }}>{hint}</span>
+              </span>
+              {selected[key] ? (
+                <span style={{ color: '#3b82f6', fontSize: '0.85rem' }}>✓ {(selected[key] as File).name}</span>
+              ) : (
+                <span style={{ color: '#9ca3af', fontSize: '0.8rem' }}>Click to select</span>
+              )}
+              <input
+                type="file"
+                accept={accept}
+                style={{ display: 'none' }}
+                ref={(el) => { inputRefs.current[key] = el }}
+                onChange={handleFileChange(key)}
+              />
+            </label>
+            {isDotfile && (
+              <p style={{ margin: '3px 4px 0', fontSize: '0.72rem', color: '#9ca3af' }}>
+                💡 If you don't see <code style={{ fontFamily: 'monospace' }}>.config</code> in the picker, press{' '}
+                <kbd style={{ background: '#f3f4f6', border: '1px solid #d1d5db', borderRadius: 3, padding: '0 4px', fontSize: '0.7rem' }}>Ctrl+H</kbd>{' '}
+                (Linux) or enable <em>Show Hidden Files</em> in the file browser.
+              </p>
             )}
-            <input
-              type="file"
-              style={{ display: 'none' }}
-              ref={(el) => { inputRefs.current[key] = el }}
-              onChange={handleFileChange(key)}
-            />
-          </label>
+          </div>
         ))}
       </div>
 
