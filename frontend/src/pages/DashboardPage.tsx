@@ -83,7 +83,7 @@ export default function DashboardPage() {
             )}
 
             {activeTab === 'memory' && (
-              <MemoryTreemap regions={analysis.memory_regions} />
+              <MemoryTreemap regions={analysis.memory_regions} sections={analysis.section_summary} />
             )}
 
             {activeTab === 'symbols' && (
